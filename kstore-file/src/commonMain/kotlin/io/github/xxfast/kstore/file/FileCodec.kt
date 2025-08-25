@@ -57,6 +57,7 @@ public class FileCodec<T : @Serializable Any>(
    * If the value is null, the file is deleted.
    * If the encoding fails, the temp file is deleted.
    * If the encoding succeeds, the temp file is atomically moved to the target file - completing the transaction.
+   * Uses fallback copy-and-delete for platforms where atomic move is not supported (e.g., Android 7 and below).
    * @param value optional value to encode
    */
   @OptIn(ExperimentalSerializationApi::class)
@@ -73,6 +74,25 @@ public class FileCodec<T : @Serializable Any>(
       throw e
     }
 
-    SystemFileSystem.atomicMove(source = tempFile, destination = file)
+    // Try atomic move first, fallback to copy-and-delete if not supported
+    try {
+      SystemFileSystem.atomicMove(source = tempFile, destination = file)
+    } catch (_: UnsupportedOperationException) {
+      // Fallback for platforms where atomic move is not supported (e.g., Android 7 and below)
+      try {
+        // Copy temp file to destination
+        SystemFileSystem.source(tempFile).buffered().use { source ->
+          SystemFileSystem.sink(file).buffered().use { destination ->
+            source.transferTo(destination)
+          }
+        }
+        // Delete temp file after successful copy
+        SystemFileSystem.delete(tempFile, mustExist = false)
+      } catch (copyException: Throwable) {
+        // Clean up temp file and rethrow
+        SystemFileSystem.delete(tempFile, mustExist = false)
+        throw copyException
+      }
+    }
   }
 }
